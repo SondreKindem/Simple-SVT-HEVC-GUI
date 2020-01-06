@@ -1,6 +1,8 @@
 # Simple-SVT-HEVC-GUI
 A simple GUI using PySimpleGUI for the SVT-HEVC FFmpeg plugin.
 
+<img src="/media/1.png" alt="Preview image" width="360">
+
 ### External libraries
 * [PySimpleGUIQt](https://github.com/PySimpleGUI/PySimpleGUI)
 * [pymediainfo](https://github.com/sbraz/pymediainfo)
