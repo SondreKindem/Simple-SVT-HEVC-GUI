@@ -28,13 +28,16 @@ __email__ = "sondre.kindem@gmail.com"
 __license__ = "GPL v3"
 __status__ = "dev"
 
-# pyinstaller -wF v3.py
+# pyinstaller -wF Simple-GUI.py
 
 #####################
 # TODOS
 # Interface and functions:
+# TODO: make sure that the input is an actual video file
+# TODO: make sure timestamps and crop is properly formatted!
 # TODO: file and folder batch
 # TODO: save presets➠
+# TODO: do crop detection
 # TODO: mark job as cancelled if encode is stopped - mark with ❌
 # TODO: make it more obvious that the queue is paused
 # TODO: investigate using ffmpeg bindings for formatting the command. Alternatively create own bindings to simplify
@@ -42,8 +45,10 @@ __status__ = "dev"
 # TODO: save and load queue
 
 # FFMPEG stuff:
-# TODO: implement decomb filter like handbrake - possibly with vapoursynth?
-# TODO: implement video cropping with autodetect
+# TODO: implement decomb filter like handbrake - possibly with vapour/avisynth?
+
+# Threading
+# TODO: sometimes, especially when crashing, the ffmpeg process will get orphaned
 
 # Misc code stuff
 # TODO: size analysis reports wrong track size
@@ -150,8 +155,8 @@ def encode_thread(encode_queue, gui_queue, status_deque, encode_event):
             if line:
                 split = re.split("frame=|fps=|q=|size=|time=", line)  # index 1 = frame, 2 = fps, 3 = q, 4 = size  TODO: investigate instances when the 'q=' split ends with 'L' forming Lsize?
 
-                percent_done = "?"  # (and est_size) Initialized as a string, in case we are unable to calculate percent done
-                est_size = "?"
+                percent_done = float(0)  # (and est_size) Initialized as a string, in case we are unable to calculate percent done
+                est_size = float(0)
                 done_frames = int(split[1])
                 time_to_complete = ""
 
@@ -159,7 +164,10 @@ def encode_thread(encode_queue, gui_queue, status_deque, encode_event):
                 if total_frames:
                     # print("{} of {}".format(done_frames, total_frames))
                     percent_done = 100 - (((total_frames - done_frames) / total_frames) * 100)
-                    time_to_complete = format_seconds((total_frames - done_frames) * (time.time() - start_time) / done_frames)
+
+                    # print("frames:", total_frames, " done f:", done_frames, "hm:", (time.time() - start_time))
+
+                    time_to_complete = format_seconds((total_frames - done_frames) * (time.time() - start_time) / (1 if done_frames == 0 else done_frames))
                     # progressbar.UpdateBar(done_frames, max=total_frames)
 
                 if type(percent_done) is not str and percent_done > 0:
@@ -173,22 +181,23 @@ def encode_thread(encode_queue, gui_queue, status_deque, encode_event):
         media_info = MediaInfo.parse(str(output_file.absolute()))
         for track in media_info.tracks:
             if track.track_type == 'Video':
-                if track.stream_size:
+                if track.stream_size and metadata["size"]:
                     final_size = int(track.stream_size) / 1048576  # in MiB
-
                     diff = metadata["size"] - final_size
                     size_analysis = "Final size: {:.2f} MB, saving {:.2f} MB. A size reduction of {:.2f}%".format(final_size, diff, (diff / metadata["size"]) * 100)
                 # Below not working because mediainfo lists some "fromstats" tags that are the same as the original file for some reason
                 # elif track.frame_count and total_frames and int(track.frame_count) != total_frames and not stoprequest.is_set():
-                if 0 < done_frames < total_frames - 300 and total_frames and not stoprequest.is_set():
-                    gui_queue.put("Did not encode the expected amount of frames... restarting encode...\nThis feature is experimental and might mess everything up.\n")
-                    old = [params]
-                    while True:
-                        try:
-                            old.append(encode_queue.get_nowait())
-                        except queue.Empty:
-                            break
-                    [encode_queue.put(i) for i in old]
+
+                # # CODE FOR automatically adding a job if the encoded frames did not match the total num of frames. Broken when changing end time
+                # if 0 < done_frames < total_frames - 300 and total_frames and not stoprequest.is_set():
+                #     gui_queue.put("Did not encode the expected amount of frames... restarting encode...\nThis feature is experimental and might mess everything up.\n")
+                #     old = [params]
+                #     while True:
+                #         try:
+                #             old.append(encode_queue.get_nowait())
+                #         except queue.Empty:
+                #             break
+                #     [encode_queue.put(i) for i in old]
                 break
 
         end_string = '** Finished encode of {}.\nDuration: {}\n{} frames **'.format(params["title"], calc_time(start_time, time.time())[0], done_frames)
@@ -321,10 +330,13 @@ def the_gui():
         "qmin": 19,
         "qmax": 21,
         "sharpen_mode": "",
+        "crop": "",
         "tune": 0,
         "preset": 7,
         "test_encode": "",
         "n_frames": "1000",
+        "start_time": "00:00:00.000",
+        "end_time": "",
     }
 
     old_params = params.copy()
@@ -333,7 +345,10 @@ def the_gui():
         "contains_video": False,
         "frame_count": None,
         "size": None,
-        "fps": None
+        "fps": None,
+        "duration": None,
+        "width": None,
+        "height": None,
     }
 
     menu_def = [['&Settings', ['&Themes', '!&Preferences', '---', 'E&xit']], ['&Presets', ['!&Save preset', '---', '!Preset1']]]
@@ -382,14 +397,21 @@ def the_gui():
         ]
     ]
 
+    video_col = [
+        [
+            sg.T("Resolution"), sg.Input(default_text="WDxHG", disabled=True, key="-RESOLUTION-"), sg.T("Crop"), sg.Input(key="-CROP-", enable_events=True), sg.Button("Autocrop")
+        ]
+    ]
+
     layout = [
         [sg.Menu(menu_def)],
         [sg.Text("Browse or drag n drop video file")],
-        [sg.Text("Input"), sg.Input(key="-INPUT-", enable_events=True), sg.FileBrowse(enable_events=True)],
+        [sg.Text("Input"), sg.Input(key="-INPUT-", enable_events=True), sg.FileBrowse(enable_events=True)], #
         [sg.Text("Output"), sg.Input(key="-OUTPUT-", enable_events=True), sg.SaveAs(enable_events=True)],
         [sg.Frame("Encode options", encoding_col)],
         [sg.Frame("Audio options", audio_col), sg.Frame("Filters", filter_col)],
-        [sg.Frame("Misc", [[sg.Checkbox("Test encode (n frames)", size=(16, 1), key="-TEST_ENCODE-", enable_events=True, tooltip=tooltips["test_encode"]), sg.Input(default_text=params["n_frames"], size=(5, 1), enable_events=True, key="-TEST_FRAMES-", disabled=True, tooltip=tooltips["test_encode"])]])],
+        [sg.Frame("Video", video_col)],
+        [sg.Frame("Misc", [[sg.Checkbox("Test encode (n frames)", size=(16, 1), key="-TEST_ENCODE-", enable_events=True, tooltip=tooltips["test_encode"]), sg.Input(default_text=params["n_frames"], size=(5, 1), enable_events=True, key="-TEST_FRAMES-", disabled=True, tooltip=tooltips["test_encode"])], [sg.T("Start time", size=(7, 1)), sg.Input(default_text=params["start_time"], enable_events=True, key="-START_TIME-", size=(9, 1), tooltip="Start timestamp"), sg.T("End time", size=(6, 1)), sg.Input(default_text="00:00:00.000", enable_events=True, key="-END_TIME-", size=(9, 1), tooltip="End timestamp")]])],
         # [sg.Frame("Command", [[sg.Column([[sg.Multiline(key="-COMMAND-", size=(60, 3))]])]])],
         [sg.Frame("Queue", [[sg.Column([[sg.Listbox(values=[], key="-QUEUE_DISPLAY-")], [sg.Button("Remove task", size=(15, 1)), sg.Button("UP", size=(7, 1)), sg.Button("DOWN", size=(7, 1))]])]])],
         [sg.Button("Start encode / add to queue", key="Start encode", size=(20, 1), tooltip=tooltips["start_encode"]), sg.Button("Stop encode", size=(20, 1)), sg.Button("Pause queue", key="Pause queue", size=(20, 1), tooltip=tooltips["pause_queue"])],
@@ -426,12 +448,15 @@ def the_gui():
             output_path = Path(params["output"])
             output_text = str(output_path)
 
-        # Create values that rely on other params being enabled
-        enable_filters = params["enable_filters"] if params["sharpen_mode"] != "" else ""  # todo: Add check for each filter here
+        enable_filters = params["enable_filters"] if params["sharpen_mode"] != "" or params["crop"] else ""  # todo: Add check for each filter here
+
+        filters = ",".join(filter(None, [params["sharpen_mode"], params["crop"]]))
+        print("filters: " + (filters if filters else "None"))
+
         n_frames = params["n_frames"] if params["test_encode"] != "" else ""  # Disable vframes number if we dont want to do test encode
 
         # Filter list before return to remove empty strings
-        return list(filter(None, ["-i", input_text, "-y", "-sn", params["skip_audio"], "-map", "0", enable_filters, params["sharpen_mode"], "-c:v", "libsvt_hevc", params["test_encode"], n_frames, "-rc", str(params["drc"]), "-qmin", str(params["qmin"]), "-qmax", str(params["qmax"]), "-qp", str(params["qp"]), "-preset", str(params["preset"]), output_text]))
+        return list(filter(None, ["-i", input_text, "-y", "-ss", params["start_time"], ("-to" if params["end_time"] else ""), params["end_time"], "-sn", params["skip_audio"], "-map", "0", enable_filters, filters, "-c:v", "libsvt_hevc", params["test_encode"], n_frames, "-rc", str(params["drc"]), "-qmin", str(params["qmin"]), "-qmax", str(params["qmax"]), "-qp", str(params["qp"]), "-preset", str(params["preset"]), output_text]))
 
     def toggle_queue():
         if encode_queue_active.is_set():
@@ -445,6 +470,35 @@ def the_gui():
         if encode_queue_active.is_set():
             encode_queue_active.clear()
             window.Element("Pause queue").update("Unpause Queue")
+
+    def autocrop():
+        try:
+            # TODO: If the video is shorter than around 16 seconds we might not get any crop values because of the low framerate and start time
+            start_time = int((video_metadata["duration"] / 4) / 1000)  # Start detecting crop at 1/4 of the video duration
+            command = [ffmpeg_path.absolute().as_posix(), "-ss", str(start_time), "-i", str(Path(params["input"])), "-t", "01:20", "-vsync",
+                       "vfr", "-vf", "fps=0.2,cropdetect", "-f", "null", "-"]
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       universal_newlines=True, close_fds=True)
+            # out, err = process.communicate()
+            crop_values = []
+            for line in process.stdout:
+                # print(line)
+                if "crop=" in line:
+                    crop_values.append(line.split("crop=")[1])
+
+            if len(crop_values) > 0:
+                most_common = max(set(crop_values), key=crop_values.count)
+                print("CROP: " + most_common)
+                if most_common:
+                    return most_common
+                else:
+                    print("Could not generate a crop :(")
+                    return ""
+
+        except Exception as ex:
+            print(ex.args)
+        print("Could not generate a crop :(")
+        return ""
 
     def update_queue_display():
         window.Element("-QUEUE_DISPLAY-").update(values=[i["status"] + " | " + i["title"] + " - " + i["uuid"] for i in encode_list])
@@ -488,7 +542,31 @@ def the_gui():
                             video_metadata["frame_count"] = track.frame_count
                             video_metadata["size"] = int(track.stream_size) / 1048576 if track.stream_size else None  # in MiB
                             video_metadata["fps"] = track.frame_rate
-                            # print(video_metadata)
+                            video_metadata["width"] = track.width
+                            video_metadata["height"] = track.height
+
+                            # Reset the start and end time params
+                            params["end_time"] = ""
+                            params["start_time"] = "00:00:00.000"
+
+                            if track.height and track.width:
+                                window.Element("-RESOLUTION-").update("%ix%i" % (track.width, track.height))
+
+                            if track.duration:
+                                video_metadata["duration"] = float(track.duration)
+
+                                # hours, rem = divmod(float(track.duration), 3600)
+                                # minutes, seconds = divmod(rem, 60)
+                                milliseconds = float(track.duration)
+                                seconds = (milliseconds / 1000) % 60
+                                minutes = int((milliseconds / (1000*60)) % 60)
+                                hours = int((milliseconds / (1000*60*60)) % 24)
+                                formatted_duration = "{:0>2}:{:0>2}:{:06.3f}".format(hours, minutes, seconds)
+                                print("Duration:", formatted_duration)
+                                window.Element("-END_TIME-").update(disabled=False)
+                                window.Element("-END_TIME-").update(formatted_duration)
+                            else:
+                                window.Element("-END_TIME-").update(disabled=True)
 
                 if video_metadata["frame_count"] is None and video_metadata["contains_video"]:
                     print("Could not extract frame count, will not be able to report progress %")
@@ -544,6 +622,12 @@ def the_gui():
             window.Element("-TEST_FRAMES-").update(val)
             params["n_frames"] = val
 
+        elif event == "-START_TIME-":
+            params["start_time"] = values["-START_TIME-"]
+
+        elif event == "-END_TIME-":
+            params["end_time"] = values["-END_TIME-"]
+
         ##################
         # AUDIO SETTINGS
         elif event == "-AUDIO-":
@@ -556,6 +640,12 @@ def the_gui():
         # FILTER SETTINGS
         elif event == "-SHARPEN-":
             params["sharpen_mode"] = "unsharp=5:5:{}:5:5:{}".format(values["-SHARPEN-"], values["-SHARPEN-"])
+
+        elif event == "-CROP-":
+            if values["-CROP-"]:
+                params["crop"] = "crop=" + values["-CROP-"]
+            else:
+                params["crop"] = ""
 
         elif event == "-SHARP_CONTROL-":
             if values["-SHARP_CONTROL-"]:
@@ -626,6 +716,11 @@ def the_gui():
         elif event == "Pause queue":
             toggle_queue()
             encode_queue.put(_skip)
+
+        elif event == "Autocrop":
+            crop = autocrop()
+            params["crop"] = "crop=" + crop
+            window.Element("-CROP-").update(crop)
 
         elif event == "Themes":
             theme = run_themes_window()
