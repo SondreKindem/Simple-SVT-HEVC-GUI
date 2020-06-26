@@ -11,6 +11,7 @@ FFmpeg: (L)GPL v3
 """
 
 import json
+import os
 import queue
 import time
 import re
@@ -23,12 +24,17 @@ from collections import deque
 import PySimpleGUIQt as sg
 from pymediainfo import MediaInfo
 
+try:
+    from subprocess import DEVNULL
+except ImportError:
+    DEVNULL = os.open(os.devnull, os.O_RDWR)
+
 __author__ = "Sondre Kindem"
 __email__ = "sondre.kindem@gmail.com"
 __license__ = "GPL v3"
 __status__ = "dev"
 
-# pyinstaller -wF Simple-GUI.py
+# pyinstaller -wF --hidden-import=pkg_resources.py2_warn Simple-GUI.py
 
 #####################
 # TODOS
@@ -121,7 +127,9 @@ def encode_thread(encode_queue, gui_queue, status_deque, encode_event):
         encode_event.put({"uuid": job_id, "event": "▶ started"})
         encode_running.set()
         start_time = time.time()
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, close_fds=True)
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        process = subprocess.Popen(command, startupinfo=startupinfo, stdin=DEVNULL, stdout=subprocess.PIPE, stderr=DEVNULL, universal_newlines=True, close_fds=True)
         # Print output as it arrives
         print("Processing...")
 
