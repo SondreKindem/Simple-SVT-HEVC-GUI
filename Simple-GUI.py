@@ -129,7 +129,7 @@ def encode_thread(encode_queue, gui_queue, status_deque, encode_event):
         start_time = time.time()
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        process = subprocess.Popen(command, startupinfo=startupinfo, stdin=DEVNULL, stdout=subprocess.PIPE, stderr=DEVNULL, universal_newlines=True, close_fds=True)
+        process = subprocess.Popen(command, startupinfo=startupinfo, stdin=DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, close_fds=True)
         # Print output as it arrives
         print("Processing...")
 
